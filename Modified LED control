@@ -8,7 +8,7 @@ const int btnUp = 2;
 const int btnDown = 3;
 const int btnSelect = 4;      // Mode / Select button
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_I2C lcd(0x3F, 16, 2);
 
 // Modes
 enum AppMode { MANUAL, TIMER_SETUP, TIMER_RUNNING };
