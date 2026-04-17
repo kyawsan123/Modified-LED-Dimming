@@ -1,0 +1,250 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Pin definitions
+const int ledPin = 9;
+const int potPin = A0;
+const int btnUp = 2;
+const int btnDown = 3;
+const int btnSelect = 4;      // Mode / Select button
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Modes
+enum AppMode { MANUAL, TIMER_SETUP, TIMER_RUNNING };
+AppMode currentMode = MANUAL;
+
+// Timer variables
+unsigned long timerEndMillis = 0;
+int setHours = 0;
+int setMinutes = 1;     // default 1 minute
+int remainingSeconds = 0;
+
+// Digit selection for HH:MM (4 digits: H1, H2, M1, M2)
+int digits[4] = {0, 0, 0, 1};  // start with 00:01
+int currentDigitIndex = 0;
+unsigned long lastBlinkTime = 0;
+bool showCursor = true;
+
+// Debouncing
+unsigned long lastDebounceTime = 0;
+const int debounceDelay = 50;
+bool lastUpState = HIGH;
+bool lastDownState = HIGH;
+bool lastSelectState = HIGH;
+
+// For manual mode brightness
+int lastPotValue = -1;
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+  pinMode(btnUp, INPUT_PULLUP);
+  pinMode(btnDown, INPUT_PULLUP);
+  pinMode(btnSelect, INPUT_PULLUP);
+  
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("LED Timer Dimmer");
+  lcd.setCursor(0, 1);
+  lcd.print("v2.0");
+  delay(1500);
+  updateLCD();
+}
+
+void loop() {
+  readButtons();
+  
+  switch (currentMode) {
+    case MANUAL:
+      handleManualMode();
+      break;
+    case TIMER_SETUP:
+      handleTimerSetup();
+      break;
+    case TIMER_RUNNING:
+      handleTimerRunning();
+      break;
+  }
+  
+  updateLCD();
+}
+
+void readButtons() {
+  bool up = digitalRead(btnUp);
+  bool down = digitalRead(btnDown);
+  bool sel = digitalRead(btnSelect);
+  unsigned long now = millis();
+  
+  if (now - lastDebounceTime < debounceDelay) {
+    lastUpState = up;
+    lastDownState = down;
+    lastSelectState = sel;
+    return;
+  }
+  
+  // SELECT button logic
+  if (sel == LOW && lastSelectState == HIGH) {
+    if (currentMode == MANUAL) {
+      // Enter timer setup
+      currentMode = TIMER_SETUP;
+      currentDigitIndex = 0;
+      // Load current set time into digits array
+      digits[0] = setHours / 10;
+      digits[1] = setHours % 10;
+      digits[2] = setMinutes / 10;
+      digits[3] = setMinutes % 10;
+      lastBlinkTime = millis();
+      showCursor = true;
+    } 
+    else if (currentMode == TIMER_SETUP) {
+      // Move to next digit, if last digit then start timer
+      if (currentDigitIndex < 3) {
+        currentDigitIndex++;
+      } else {
+        // Start timer
+        setHours = digits[0] * 10 + digits[1];
+        setMinutes = digits[2] * 10 + digits[3];
+        if (setHours == 0 && setMinutes == 0) setMinutes = 1; // prevent zero
+        unsigned long durationMs = ((unsigned long)setHours * 3600 + setMinutes * 60) * 1000;
+        timerEndMillis = millis() + durationMs;
+        currentMode = TIMER_RUNNING;
+        analogWrite(ledPin, 255);   // LED full on during timer
+      }
+    }
+    else if (currentMode == TIMER_RUNNING) {
+      // Cancel timer and return to manual mode
+      currentMode = MANUAL;
+      analogWrite(ledPin, map(analogRead(potPin), 0, 1023, 0, 255));
+    }
+    lastDebounceTime = now;
+  }
+  
+  // UP button
+  if (up == LOW && lastUpState == HIGH) {
+    if (currentMode == TIMER_SETUP) {
+      incrementDigit(true);
+    }
+    lastDebounceTime = now;
+  }
+  
+  // DOWN button
+  if (down == LOW && lastDownState == HIGH) {
+    if (currentMode == TIMER_SETUP) {
+      incrementDigit(false);
+    }
+    lastDebounceTime = now;
+  }
+  
+  lastUpState = up;
+  lastDownState = down;
+  lastSelectState = sel;
+}
+
+void incrementDigit(bool up) {
+  int val = digits[currentDigitIndex];
+  if (up) val++; else val--;
+  
+  // Constraints per digit position
+  switch (currentDigitIndex) {
+    case 0: // hour tens
+      val = constrain(val, 0, 2);
+      break;
+    case 1: // hour units
+      if (digits[0] == 2) val = constrain(val, 0, 3);
+      else val = constrain(val, 0, 9);
+      break;
+    case 2: // minute tens
+      val = constrain(val, 0, 5);
+      break;
+    case 3: // minute units
+      val = constrain(val, 0, 9);
+      break;
+  }
+  digits[currentDigitIndex] = val;
+  
+  // Update setHours/setMinutes for display
+  setHours = digits[0]*10 + digits[1];
+  setMinutes = digits[2]*10 + digits[3];
+  if (setHours > 23) setHours = 23;
+  if (setMinutes > 59) setMinutes = 59;
+}
+
+void handleManualMode() {
+  int potVal = analogRead(potPin);
+  // Only write when changed to reduce noise
+  if (abs(potVal - lastPotValue) > 2) {
+    int brightness = map(potVal, 0, 1023, 0, 255);
+    analogWrite(ledPin, brightness);
+    lastPotValue = potVal;
+  }
+}
+
+void handleTimerSetup() {
+  // Blink cursor every 500ms
+  if (millis() - lastBlinkTime > 500) {
+    showCursor = !showCursor;
+    lastBlinkTime = millis();
+  }
+}
+
+void handleTimerRunning() {
+  unsigned long now = millis();
+  if (now >= timerEndMillis) {
+    // Time's up - turn LED off immediately
+    analogWrite(ledPin, 0);
+    currentMode = MANUAL;
+  } else {
+    // Calculate remaining time in seconds
+    unsigned long remainingMs = timerEndMillis - now;
+    remainingSeconds = remainingMs / 1000;
+    // Keep LED full on
+    analogWrite(ledPin, 255);
+  }
+}
+
+void updateLCD() {
+  lcd.clear();
+  switch (currentMode) {
+    case MANUAL:
+      lcd.setCursor(0, 0);
+      lcd.print("Manual Mode   ");
+      lcd.setCursor(0, 1);
+      int brightPercent = map(analogRead(potPin), 0, 1023, 0, 100);
+      lcd.print("Bright: ");
+      lcd.print(brightPercent);
+      lcd.print("%   ");
+      break;
+      
+    case TIMER_SETUP:
+      lcd.setCursor(0, 0);
+      lcd.print("Set Timer (HH:MM)");
+      lcd.setCursor(0, 1);
+      // Show digits with cursor
+      char buf[9];
+      sprintf(buf, "%02d:%02d", setHours, setMinutes);
+      lcd.print(buf);
+      // Blink cursor at current digit position
+      if (showCursor) {
+        int cursorCol = (currentDigitIndex < 2) ? currentDigitIndex : currentDigitIndex + 1;
+        lcd.setCursor(cursorCol, 1);
+        lcd.cursor();
+      } else {
+        lcd.noCursor();
+      }
+      break;
+      
+    case TIMER_RUNNING:
+      lcd.setCursor(0, 0);
+      lcd.print("Timer Running  ");
+      lcd.setCursor(0, 1);
+      int hrs = remainingSeconds / 3600;
+      int mins = (remainingSeconds % 3600) / 60;
+      int secs = remainingSeconds % 60;
+      char timeBuf[9];
+      sprintf(timeBuf, "%02d:%02d:%02d", hrs, mins, secs);
+      lcd.print("Left: ");
+      lcd.print(timeBuf);
+      break;
+  }
+}
